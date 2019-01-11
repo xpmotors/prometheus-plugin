@@ -3,7 +3,9 @@ package org.jenkinsci.plugins.prometheus;
 import static org.jenkinsci.plugins.prometheus.util.FlowNodes.getSortedStageNodes;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import io.prometheus.client.Counter;
 import org.apache.commons.lang.StringUtils;
@@ -42,33 +44,15 @@ public class JobCollector extends Collector {
     private Gauge jobTestsFailing;
     private Summary stageSummary;
 
+    private String namespace = ConfigurationUtils.getNamespace();
+    private String fullname = "builds";
+    private String subsystem = "jenkins";
+    private String jobAttribute = PrometheusConfiguration.get().getJobAttributeName();
+    private String[] labelNameArray = {jobAttribute, "repo"};
+    private String[] labelStageNameArray = {jobAttribute, "repo", "stage"};
+    private Map<String, Integer> jobBuildMap = new HashMap<>();
+
     public JobCollector() {
-    }
-
-    @Override
-    public List<MetricFamilySamples> collect() {
-        logger.debug("Collecting metrics for prometheus");
-
-        final String namespace = ConfigurationUtils.getNamespace();
-        final List<MetricFamilySamples> samples = new ArrayList<>();
-        final List<Job> jobs = new ArrayList<>();
-        final String fullname = "builds";
-        final String subsystem = "jenkins";
-        final String jobAttribute = PrometheusConfiguration.get().getJobAttributeName();
-        String[] labelNameArray = {jobAttribute, "repo"};
-        String[] labelStageNameArray = {jobAttribute, "repo", "stage"};
-        final boolean ignoreDisabledJobs = PrometheusConfiguration.get().isProcessingDisabledBuilds();
-        final boolean ignoreBuildMetrics =
-                !PrometheusConfiguration.get().isCountAbortedBuilds() &&
-                        !PrometheusConfiguration.get().isCountFailedBuilds() &&
-                        !PrometheusConfiguration.get().isCountNotBuiltBuilds() &&
-                        !PrometheusConfiguration.get().isCountSuccessfulBuilds() &&
-                        !PrometheusConfiguration.get().isCountUnstableBuilds();
-
-        if (ignoreBuildMetrics) {
-            return samples;
-        }
-
         logger.debug("getting summary of build times in milliseconds by Job");
         summary = Summary.build().
                 name(fullname + "_duration_milliseconds_summary").
@@ -150,6 +134,33 @@ public class JobCollector extends Collector {
                 labelNames(labelStageNameArray).
                 help("Summary of Jenkins build times by Job and Stage").
                 create();
+
+        Jobs.forEachJob(new Callback<Job>() {
+            @Override
+            public void invoke(Job job) {
+                jobBuildMap.put(job.getFullName(), null == job.getLastBuild() ? 0 : job.getLastBuild().getNumber());
+            }
+        });
+    }
+
+    @Override
+    public List<MetricFamilySamples> collect() {
+        logger.debug("Collecting metrics for prometheus");
+
+        final List<MetricFamilySamples> samples = new ArrayList<>();
+        final List<Job> jobs = new ArrayList<>();
+
+        final boolean ignoreDisabledJobs = PrometheusConfiguration.get().isProcessingDisabledBuilds();
+        final boolean ignoreBuildMetrics =
+                !PrometheusConfiguration.get().isCountAbortedBuilds() &&
+                        !PrometheusConfiguration.get().isCountFailedBuilds() &&
+                        !PrometheusConfiguration.get().isCountNotBuiltBuilds() &&
+                        !PrometheusConfiguration.get().isCountSuccessfulBuilds() &&
+                        !PrometheusConfiguration.get().isCountUnstableBuilds();
+
+        if (ignoreBuildMetrics) {
+            return samples;
+        }
 
         Jobs.forEachJob(new Callback<Job>() {
             @Override
@@ -238,6 +249,10 @@ public class JobCollector extends Collector {
             logger.debug("job [{}] never built", job.getFullName());
             return;
         }
+        int lastMaxRunNumber = (null == jobBuildMap.get(job.getFullName())) ? 0 : jobBuildMap.get(job.getFullName());
+        if (run.getNumber() <= lastMaxRunNumber) {
+            return;
+        }
 
         /*
          * _last_build_result _last_build_result_ordinal
@@ -274,8 +289,13 @@ public class JobCollector extends Collector {
             jobTestsFailing.labels(labelValueArray).set(testsFail);
         }
 
+        int currMaxRunNumber = 0;
+
         while (run != null) {
             logger.debug("getting metrics for run [{}] from job [{}]", run.getNumber(), job.getName());
+            if (run.getNumber() <= lastMaxRunNumber) {
+                break;
+            }
             if (Runs.includeBuildInMetrics(run)) {
                 logger.debug("getting build duration for run [{}] from job [{}]", run.getNumber(), job.getName());
                 long buildDuration = run.getDuration();
@@ -288,6 +308,9 @@ public class JobCollector extends Collector {
                     } else if (result.ordinal > 1) {
                         jobFailedCount.labels(labelValueArray).inc();
                     }
+                }
+                if (run.getNumber() > currMaxRunNumber) {
+                    currMaxRunNumber = run.getNumber();
                 }
                 if (run instanceof WorkflowRun) {
                     logger.debug("run [{}] from job [{}] is of type workflowRun", run.getNumber(), job.getName());
@@ -307,6 +330,10 @@ public class JobCollector extends Collector {
                 }
             }
             run = run.getPreviousBuild();
+        }
+
+        if (currMaxRunNumber > 0) {
+            jobBuildMap.put(job.getFullName(), currMaxRunNumber);
         }
     }
 
