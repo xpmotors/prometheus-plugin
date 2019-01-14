@@ -249,10 +249,6 @@ public class JobCollector extends Collector {
             logger.debug("job [{}] never built", job.getFullName());
             return;
         }
-        int lastMaxRunNumber = (null == jobBuildMap.get(job.getFullName())) ? 0 : jobBuildMap.get(job.getFullName());
-        if (run.getNumber() <= lastMaxRunNumber) {
-            return;
-        }
 
         /*
          * _last_build_result _last_build_result_ordinal
@@ -289,6 +285,7 @@ public class JobCollector extends Collector {
             jobTestsFailing.labels(labelValueArray).set(testsFail);
         }
 
+        int lastMaxRunNumber = (null == jobBuildMap.get(job.getFullName())) ? 0 : jobBuildMap.get(job.getFullName());
         int currMaxRunNumber = 0;
 
         while (run != null) {
@@ -327,6 +324,10 @@ public class JobCollector extends Collector {
                         }
                     } catch (final NullPointerException e) {
                     }
+                }
+            } else {
+                if (!run.isBuilding() && run.getNumber() > currMaxRunNumber) {
+                    currMaxRunNumber = run.getNumber();
                 }
             }
             run = run.getPreviousBuild();
