@@ -50,7 +50,7 @@ public class JobCollector extends Collector {
     private String jobAttribute = PrometheusConfiguration.get().getJobAttributeName();
     private String[] labelNameArray = {jobAttribute, "repo"};
     private String[] labelStageNameArray = {jobAttribute, "repo", "stage"};
-    private Map<String, Integer> jobBuildMap = new HashMap<>();
+    private Map<String, Integer> jobBuildMap = null;
 
     public JobCollector() {
         logger.debug("getting summary of build times in milliseconds by Job");
@@ -134,13 +134,6 @@ public class JobCollector extends Collector {
                 labelNames(labelStageNameArray).
                 help("Summary of Jenkins build times by Job and Stage").
                 create();
-
-        Jobs.forEachJob(new Callback<Job>() {
-            @Override
-            public void invoke(Job job) {
-                jobBuildMap.put(job.getFullName(), null == job.getLastBuild() ? 0 : job.getLastBuild().getNumber());
-            }
-        });
     }
 
     @Override
@@ -149,6 +142,17 @@ public class JobCollector extends Collector {
 
         final List<MetricFamilySamples> samples = new ArrayList<>();
         final List<Job> jobs = new ArrayList<>();
+
+        if (null == jobBuildMap) {
+            jobBuildMap = new HashMap<>();
+            Jobs.forEachJob(new Callback<Job>() {
+                @Override
+                public void invoke(Job job) {
+                    jobBuildMap.put(job.getFullName(), null == job.getLastBuild() ? 0 : job.getLastBuild().getNumber());
+                }
+            });
+            return samples;
+        }
 
         final boolean ignoreDisabledJobs = PrometheusConfiguration.get().isProcessingDisabledBuilds();
         final boolean ignoreBuildMetrics =
