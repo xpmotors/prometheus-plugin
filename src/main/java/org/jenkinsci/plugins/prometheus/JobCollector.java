@@ -4,6 +4,7 @@ import static org.jenkinsci.plugins.prometheus.util.FlowNodes.getSortedStageNode
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
@@ -50,7 +51,8 @@ public class JobCollector extends Collector {
     private String jobAttribute = PrometheusConfiguration.get().getJobAttributeName();
     private String[] labelNameArray = {jobAttribute, "repo"};
     private String[] labelStageNameArray = {jobAttribute, "repo", "stage"};
-    private Map<String, Integer> jobBuildMap = null;
+    private Map<String, Integer> jobBuildMap = new HashMap<>();
+    private boolean InitializedJobBuildMap = false;
 
     public JobCollector() {
         logger.debug("getting summary of build times in milliseconds by Job");
@@ -142,17 +144,33 @@ public class JobCollector extends Collector {
 
         final List<MetricFamilySamples> samples = new ArrayList<>();
         final List<Job> jobs = new ArrayList<>();
+        final Map<String, Integer> allJobsMap = new HashMap();
 
-        if (null == jobBuildMap) {
-            jobBuildMap = new HashMap<>();
-            Jobs.forEachJob(new Callback<Job>() {
-                @Override
-                public void invoke(Job job) {
+        Jobs.forEachJob(new Callback<Job>() {
+            @Override
+            public void invoke(Job job) {
+                if (!InitializedJobBuildMap) {
                     jobBuildMap.put(job.getFullName(), null == job.getLastBuild() ? 0 : job.getLastBuild().getNumber());
+                } else {
+                    allJobsMap.put(job.getFullName(), null == job.getLastBuild() ? 0 : job.getLastBuild().getNumber());
                 }
-            });
+            }
+        });
+
+        if (!InitializedJobBuildMap) {
+            InitializedJobBuildMap = true;
             return samples;
         }
+
+        logger.debug("Clean up deleted jobs in map");
+        Iterator<Map.Entry<String, Integer>> iterator = jobBuildMap.entrySet().iterator();
+        while (iterator.hasNext()) {
+            Map.Entry<String, Integer> entry = iterator.next();
+            if (!allJobsMap.containsKey(entry.getKey())) {
+                iterator.remove();
+            }
+        }
+        logger.debug("jobBuildMap = {}", jobBuildMap.toString());
 
         final boolean ignoreDisabledJobs = PrometheusConfiguration.get().isProcessingDisabledBuilds();
         final boolean ignoreBuildMetrics =
@@ -291,6 +309,11 @@ public class JobCollector extends Collector {
 
         int lastMaxRunNumber = (null == jobBuildMap.get(job.getFullName())) ? 0 : jobBuildMap.get(job.getFullName());
         int currMaxRunNumber = 0;
+
+        if (run.getNumber() < lastMaxRunNumber) {
+            jobBuildMap.put(job.getFullName(), 0);
+            lastMaxRunNumber = 0;
+        }
 
         while (run != null) {
             logger.debug("getting metrics for run [{}] from job [{}]", run.getNumber(), job.getName());
