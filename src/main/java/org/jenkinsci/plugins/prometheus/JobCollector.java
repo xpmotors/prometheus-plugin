@@ -1,5 +1,6 @@
 package org.jenkinsci.plugins.prometheus;
 
+import static hudson.security.ACL.SYSTEM;
 import static org.jenkinsci.plugins.prometheus.util.FlowNodes.getSortedStageNodes;
 
 import java.util.ArrayList;
@@ -9,6 +10,7 @@ import java.util.List;
 import java.util.Map;
 
 import io.prometheus.client.Counter;
+import org.acegisecurity.context.SecurityContextHolder;
 import org.apache.commons.lang.StringUtils;
 import org.jenkinsci.plugins.prometheus.util.Callback;
 import org.jenkinsci.plugins.prometheus.util.ConfigurationUtils;
@@ -52,7 +54,6 @@ public class JobCollector extends Collector {
     private String[] labelNameArray = {jobAttribute, "repo"};
     private String[] labelStageNameArray = {jobAttribute, "repo", "stage"};
     private Map<String, Integer> jobBuildMap = new HashMap<>();
-    private boolean InitializedJobBuildMap = false;
 
     public JobCollector() {
         logger.debug("getting summary of build times in milliseconds by Job");
@@ -136,6 +137,15 @@ public class JobCollector extends Collector {
                 labelNames(labelStageNameArray).
                 help("Summary of Jenkins build times by Job and Stage").
                 create();
+
+        logger.debug("record all job's last build number");
+        SecurityContextHolder.getContext().setAuthentication(SYSTEM);
+        Jobs.forEachJob(new Callback<Job>() {
+            @Override
+            public void invoke(Job job) {
+                jobBuildMap.put(job.getFullName(), null == job.getLastBuild() ? 0 : job.getLastBuild().getNumber());
+            }
+        });
     }
 
     @Override
@@ -146,21 +156,14 @@ public class JobCollector extends Collector {
         final List<Job> jobs = new ArrayList<>();
         final Map<String, Integer> allJobsMap = new HashMap();
 
+        logger.debug("get the current all job list");
+        SecurityContextHolder.getContext().setAuthentication(SYSTEM);
         Jobs.forEachJob(new Callback<Job>() {
             @Override
             public void invoke(Job job) {
-                if (!InitializedJobBuildMap) {
-                    jobBuildMap.put(job.getFullName(), null == job.getLastBuild() ? 0 : job.getLastBuild().getNumber());
-                } else {
-                    allJobsMap.put(job.getFullName(), null == job.getLastBuild() ? 0 : job.getLastBuild().getNumber());
-                }
+                allJobsMap.put(job.getFullName(), null == job.getLastBuild() ? 0 : job.getLastBuild().getNumber());
             }
         });
-
-        if (!InitializedJobBuildMap) {
-            InitializedJobBuildMap = true;
-            return samples;
-        }
 
         logger.debug("Clean up deleted jobs in map");
         Iterator<Map.Entry<String, Integer>> iterator = jobBuildMap.entrySet().iterator();
@@ -170,7 +173,6 @@ public class JobCollector extends Collector {
                 iterator.remove();
             }
         }
-        logger.debug("jobBuildMap = {}", jobBuildMap.toString());
 
         final boolean ignoreDisabledJobs = PrometheusConfiguration.get().isProcessingDisabledBuilds();
         final boolean ignoreBuildMetrics =
@@ -311,6 +313,7 @@ public class JobCollector extends Collector {
         int currMaxRunNumber = 0;
 
         if (run.getNumber() < lastMaxRunNumber) {
+            logger.debug("job [{}] is recreated after deletion", job.getName());
             jobBuildMap.put(job.getFullName(), 0);
             lastMaxRunNumber = 0;
         }
@@ -354,6 +357,7 @@ public class JobCollector extends Collector {
                 }
             } else {
                 if (!run.isBuilding() && run.getNumber() > currMaxRunNumber) {
+                    logger.debug("run [{}] from job [{}] do not count builds", run.getNumber(), job.getName());
                     currMaxRunNumber = run.getNumber();
                 }
             }
